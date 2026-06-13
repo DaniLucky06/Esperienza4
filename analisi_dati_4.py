@@ -1,96 +1,151 @@
-import sys, os
+import sys
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Configurazione path per importare la libreria personalizzata
 dire = os.path.dirname(os.path.realpath(__file__))
 sys.path.append(os.path.join(dire, "analisi-dati-python"))
 from analysis import *
-import matplotlib.pyplot as plt
-import numpy as np
 
-g = 9.807
-rho = 1000.
-offset_temperature = 0.
+# ==============================================================================
+# CONFIGURAZIONE DIMENSIONE FONT E PARAMETRI GRAFICI (rcParams)
+# ==============================================================================
+plt.rcParams.update({
+    'font.size': 17,          # Dimensione generale del testo e valori numerici assi
+    'axes.titlesize': 20,     # Dimensione del titolo dei singoli grafici
+    'axes.labelsize': 18,     # Dimensione delle etichette degli assi (X e Y)
+    'legend.fontsize': 15,    # Dimensione del testo all'interno delle legende
+    'legend.loc': 'lower right'      # Posizionamento automatico ottimale della legenda
+})
 
+# ==============================================================================
+# COSTANTI E PARAMETRI FISICI
+# ==============================================================================
+g = 9.807          # Accelerazione di gravità [m/s^2]
+rho = 1000.        # Densità dell'acqua [kg/m^3]
+altezza_dx = 0.98  # Altezza del ramo di destra (riferimento) [m]
+T_0 = 273.15       # Zero gradi Celsius in Kelvin [K]
+
+# Parametri per le correzioni sistematiche (estratti da "Esperienza 4 - Volumi")
+V0 = 611.92        # Volume bottiglia [cm^3]
+v = 7.315          # Volume tubino + tubino vetro non termalizzati [cm^3]
+gamma = 1.5e-5     # Coefficiente di dilatazione volumica del Pyrex [K^-1]
+T_a = 293.15       # Temperatura ambiente stimata (20°C) [K]
+
+# ==============================================================================
+# CARICAMENTO E PREPARAZIONE DATI
+# ==============================================================================
 dati = np.loadtxt(os.path.join(dire, 'dati_acqua.csv'), delimiter=',')
-rimuovi_da_zero = 0
-fine_discesa = 16 - rimuovi_da_zero
-temperature_discesa = dati[0:fine_discesa, 0] + 273.15 - offset_temperature
-altezze_discesa = dati[0:fine_discesa, 1] / 100
-pressioni_discesa = dati[0:fine_discesa, 2] * 100
-inizio_salita = 15 + rimuovi_da_zero
-temperature_salita = dati[inizio_salita:, 0] + 273.15 - offset_temperature
-altezze_salita = dati[inizio_salita:, 1] / 100
-pressioni_salita = dati[inizio_salita:, 2] * 100
 
-altezza_dx = 98. / 100
-dew_point = 8. + 273.15
+# Definizione dell'offset termico da sottrarre
+offset_temperatura = 0.0 # 0.09
 
-dh_discesa = altezze_discesa - altezza_dx
-dh_salita = altezze_salita - altezza_dx
+# Separazione dati Discesa (prime 16 righe) e Salita (restanti)
+fine_discesa = 16
+inizio_salita = 15
+filtro = 6
 
-p_int_discesa = pressioni_discesa + rho * g * dh_discesa
-p_int_salita = pressioni_salita + rho * g * dh_salita
+# Discesa: Applicazione offset, conversione in Kelvin, metri e Pascal
+t_discesa = (dati[0:fine_discesa, 0] - offset_temperatura) + T_0
+h_discesa = dati[0:fine_discesa, 1] / 100
+p_ext_discesa = dati[0:fine_discesa, 2] * 100
 
-ris_temperatura = 0.01
-ris_h = 2. / 1000
-ris_p_ext = 0.01 * 100
+# Salita: Applicazione offset, conversione in Kelvin, metri e Pascal
+t_salita = (dati[inizio_salita:, 0] - offset_temperatura) + T_0
+h_salita = dati[inizio_salita:, 1] / 100
+p_ext_salita = dati[inizio_salita:, 2] * 100
+
+# Calcolo dislivelli e pressione interna assoluta (P_ext + rho*g*dh)
+dh_discesa = h_discesa - altezza_dx
+dh_salita = h_salita - altezza_dx
+
+p_int_discesa = p_ext_discesa + rho * g * dh_discesa
+p_int_salita = p_ext_salita + rho * g * dh_salita
+
+# ==============================================================================
+# INCERTEZZE E PROPAGAZIONE DEGLI ERRORI
+# ==============================================================================
+# Risoluzioni strumentali
+ris_temperatura = 0.01       # [K]
+ris_h = 0.002                # 2 mm [m]
+ris_p_ext = 1.0              # 0.01 mbar -> 1 Pa [Pa]
+
+# Incertezze tipo B (distribuzione uniforme -> diviso radice di 12)
 err_t = ris_temperatura / np.sqrt(12)
-err_h = ris_h / np.sqrt(12) * np.sqrt(2)
+err_h = (ris_h / np.sqrt(12)) * np.sqrt(2) # x rad(2) per propagazione differenza di due altezze
 err_p_ext = ris_p_ext / np.sqrt(12)
 
-err_p_int = np.sqrt(err_p_ext**2 + (rho * g * err_h)**2)
+# Errore propagato sulla pressione interna (somma in quadratura)
+err_p_int_val = np.sqrt(err_p_ext**2 + (rho * g * err_h)**2)
+
+# Vettori di errori omogenei per sfruttare la libreria analysis.py
+err_p_discesa = np.ones(len(t_discesa)) * err_p_int_val
+err_p_salita  = np.ones(len(t_salita)) * err_p_int_val
+err_t_discesa = np.ones(len(t_discesa)) * err_t
+err_t_salita  = np.ones(len(t_salita)) * err_t
+
+
+# --- FUNZIONE DI SUPPORTO PER EVITARE CODICE RIPETUTO ---
+def calcola_zero_assoluto(reg_data):
+    """Calcola lo zero assoluto (T0 = -a/b) e propaga l'errore dai parametri di fit."""
+    T_zero = -reg_data.a / reg_data.b
+    err_T_zero = np.abs(T_zero) * np.sqrt((reg_data.a_err / reg_data.a)**2 + (reg_data.b_err / reg_data.b)**2)
+    return T_zero, err_T_zero
+
 
 # ==============================================================================
-# PARTE 1: ANALISI CON TUTTI I PUNTI SPERIMENTALI
+# PARTE 1: ANALISI COMPLETA (TUTTI I PUNTI SPERIMENTALI)
 # ==============================================================================
+print("\n" + "="*70 + "\n=== 1. ANALISI COMPLETA (TUTTI I PUNTI)\n" + "="*70)
 
-uni_discesa = np.ones(len(temperature_discesa))
-misure_discesa = WeightedMeasurements(temperature_discesa, p_int_discesa, uni_discesa * err_t, uni_discesa * err_p_int)
-reg_data_discesa, xy_data_discesa = weightedLinReg(misure_discesa)
+# Fit pesati
+mis_discesa = WeightedMeasurements(t_discesa, p_int_discesa, err_t_discesa, err_p_discesa)
+reg_discesa, xy_discesa = weightedLinReg(mis_discesa)
 
-uni_salita = np.ones(len(temperature_salita))
-misure_salita = WeightedMeasurements(temperature_salita, p_int_salita, uni_salita * err_t, uni_salita * err_p_int)
-reg_data_salita, xy_data_salita = weightedLinReg(misure_salita)
+mis_salita = WeightedMeasurements(t_salita, p_int_salita, err_t_salita, err_p_salita)
+reg_salita, xy_salita = weightedLinReg(mis_salita)
 
-# 1a. Grafico dei Fit (Tutti i punti)
-plotGraphs([xy_data_discesa,misure_discesa, xy_data_salita, misure_salita], GraphVisuals(['k', 'rx', 'b', 'gx']))
+# Stampa metriche di bontà del fit
+print(f"Chi2 ridotto discesa : {reg_discesa.chi2/reg_discesa.nu:.2f}")
+print(f"Chi2 ridotto salita  : {reg_salita.chi2/reg_salita.nu:.2f}\n")
 
-print("======================================================================")
-print("===                  ANALISI COMPLETA (TUTTI I PUNTI)              ===")
-print("======================================================================")
-print("Chi2 ridotto discesa:", reg_data_discesa.chi2/reg_data_discesa.nu)
-print("Chi2 ridotto salita :", reg_data_salita.chi2/reg_data_salita.nu)
-print(f"a discesa: {reg_data_discesa.a} | b discesa: {reg_data_discesa.b}")
-print(f"a salita : {reg_data_salita.a} | b salita : {reg_data_salita.b}")
-print(f"a_err discesa: {reg_data_discesa.a_err} | b_err discesa: {reg_data_discesa.b_err}")
-print(f"a_err salita : {reg_data_salita.a_err} | b_err salita : {reg_data_salita.b_err}")
+# Calcolo zero assoluto
+T0_disc, err_T0_disc = calcola_zero_assoluto(reg_discesa)
+T0_sal, err_T0_sal = calcola_zero_assoluto(reg_salita)
 
-t_a = np.abs(reg_data_discesa.a - reg_data_salita.a) / np.sqrt(reg_data_discesa.a_err**2 + reg_data_salita.a_err**2)
-t_b = np.abs(reg_data_discesa.b - reg_data_salita.b) / np.sqrt(reg_data_discesa.b_err**2 + reg_data_salita.b_err**2)
-print(f"T-test completo (a, b): {t_a} | {t_b}")
+print(f"Zero assoluto (Discesa): {T0_disc:.2f} +/- {err_T0_disc:.2f} K  ({T0_disc - T_0:.2f} °C)")
+print(f"Zero assoluto (Salita) : {T0_sal:.2f} +/- {err_T0_sal:.2f} K  ({T0_sal - T_0:.2f} °C)")
+print(f"Test compatibilità 0 K : {np.abs(T0_disc)/err_T0_disc:.2f} (disc) | {np.abs(T0_sal)/err_T0_sal:.2f} (sal)\n")
 
-# T-test dei parametri 'a' rispetto a 0
-t_a_zero_discesa = np.abs(reg_data_discesa.a) / reg_data_discesa.a_err
-t_a_zero_salita = np.abs(reg_data_salita.a) / reg_data_salita.a_err
-print(f"T-test intercetta con lo zero (discesa, salita): {t_a_zero_discesa} | {t_a_zero_salita}\n")
+# Grafico fit e Residui
+print("=> Mostro i grafici del Fit Completo (chiudi la finestra per proseguire)")
+plt.figure(10, figsize=(10, 6))
+plt.title('Fit Completo: Pressione vs Temperatura')
+plt.xlabel('Temperatura T (K)')
+plt.ylabel('Pressione $P$ (Pa)')
+plt.grid(True, linestyle=':', alpha=0.5)
+# Generazione fittizia per la legenda
+plt.plot([], [], 'rx', label='Dati Discesa')
+plt.plot([], [], 'k-', label='Fit Discesa')
+plt.plot([], [], 'gx', label='Dati Salita')
+plt.plot([], [], 'b-', label='Fit Salita')
+plt.legend()
+plotGraphs([xy_discesa, mis_discesa, xy_salita, mis_salita], GraphVisuals(['k', 'rx', 'b', 'gx']), figureID=10)
 
-# 1b. Grafico dei Residui (Tutti i punti)
-p_predetta_discesa = reg_data_discesa.a + reg_data_discesa.b * temperature_discesa
-p_predetta_salita = reg_data_salita.a + reg_data_salita.b * temperature_salita
-residui_discesa = p_int_discesa - p_predetta_discesa
-residui_salita = p_int_salita - p_predetta_salita
+residui_disc = p_int_discesa - (reg_discesa.a + reg_discesa.b * t_discesa)
+residui_sal = p_int_salita - (reg_salita.a + reg_salita.b * t_salita)
 
 fig1, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 4), sharey=True)
-ax1.axhline(y=0, color='k', linestyle='--', alpha=0.6)
-ax1.errorbar(temperature_discesa, residui_discesa, yerr=uni_discesa*err_p_int, xerr=uni_discesa*err_t, fmt='rx', ecolor='r', capsize=2, label='Residui Discesa')
-ax1.set_title('Residui Completi - Discesa')
-ax1.set_xlabel('Temperatura T (K)')
-ax1.set_ylabel('Residui $\Delta P$ (Pa)')
+ax1.errorbar(t_discesa, residui_disc, yerr=err_p_discesa, xerr=err_t_discesa, fmt='rx', ecolor='r', capsize=2, label='Dati Sperimentali')
+ax1.axhline(0, color='k', linestyle='--', label='Residuo Atteso (=0)')
+ax1.set(title='Residui Completi - Discesa', xlabel='Temperatura T (K)', ylabel='Residui $\Delta P$ (Pa)')
 ax1.grid(True, linestyle=':', alpha=0.5)
 ax1.legend()
 
-ax2.axhline(y=0, color='k', linestyle='--', alpha=0.6)
-ax2.errorbar(temperature_salita, residui_salita, yerr=uni_salita*err_p_int, xerr=uni_salita*err_t, fmt='gx', ecolor='g', capsize=2, label='Residui Salita')
-ax2.set_title('Residui Completi - Salita')
-ax2.set_xlabel('Temperatura T (K)')
+ax2.errorbar(t_salita, residui_sal, yerr=err_p_salita, xerr=err_t_salita, fmt='gx', ecolor='g', capsize=2, label='Dati Sperimentali')
+ax2.axhline(0, color='k', linestyle='--', label='Residuo Atteso (=0)')
+ax2.set(title='Residui Completi - Salita', xlabel='Temperatura T (K)')
 ax2.grid(True, linestyle=':', alpha=0.5)
 ax2.legend()
 plt.tight_layout()
@@ -98,73 +153,137 @@ plt.show()
 
 
 # ==============================================================================
-# PARTE 2: FILTRAGGIO - ESCLUSIONE DEI PRIMI 4 PUNTI PIÙ VICINI A 0°C
+# PARTE 2: FILTRAGGIO (ESCLUSIONE CONDENSA - PRIMI {filtro} PUNTI PIÙ FREDDI)
 # ==============================================================================
+print("\n" + "="*70 + "\n=== 2. ANALISI FILTRATA (SENZA CONDENSA)\n" + "="*70)
 
-# Identificazione ed esclusione dei 4 valori di temperatura minori
-idx_escludi_discesa = np.argsort(temperature_discesa)[:4]
-mask_filtrata_discesa = np.ones(len(temperature_discesa), dtype=bool)
-mask_filtrata_discesa[idx_escludi_discesa] = False
-t_discesa_f = temperature_discesa[mask_filtrata_discesa]
-p_discesa_f = p_int_discesa[mask_filtrata_discesa]
+# Mascheratura dati
+mask_disc = np.ones(len(t_discesa), dtype=bool)
+mask_disc[np.argsort(t_discesa)[:filtro]] = False
+t_disc_f, p_disc_f, err_t_disc_f, err_p_disc_f = t_discesa[mask_disc], p_int_discesa[mask_disc], err_t_discesa[mask_disc], err_p_discesa[mask_disc]
 
-idx_escludi_salita = np.argsort(temperature_salita)[:4]
-mask_filtrata_salita = np.ones(len(temperature_salita), dtype=bool)
-mask_filtrata_salita[idx_escludi_salita] = False
-t_salita_f = temperature_salita[mask_filtrata_salita]
-p_salita_f = p_int_salita[mask_filtrata_salita]
+mask_sal = np.ones(len(t_salita), dtype=bool)
+mask_sal[np.argsort(t_salita)[:filtro]] = False
+t_sal_f, p_sal_f, err_t_sal_f, err_p_sal_f = t_salita[mask_sal], p_int_salita[mask_sal], err_t_salita[mask_sal], err_p_salita[mask_sal]
 
-# Calcolo nuovi fit lineari pesati sui dati filtrati
-uni_discesa_f = np.ones(len(t_discesa_f))
-misure_discesa_f = WeightedMeasurements(t_discesa_f, p_discesa_f, uni_discesa_f * err_t, uni_discesa_f * err_p_int)
-reg_data_discesa_f, xy_data_discesa_f = weightedLinReg(misure_discesa_f)
+# Fit pesati sui dati filtrati
+mis_disc_f = WeightedMeasurements(t_disc_f, p_disc_f, err_t_disc_f, err_p_disc_f)
+reg_disc_f, xy_disc_f = weightedLinReg(mis_disc_f)
 
-uni_salita_f = np.ones(len(t_salita_f))
-misure_salita_f = WeightedMeasurements(t_salita_f, p_salita_f, uni_salita_f * err_t, uni_salita_f * err_p_int)
-reg_data_salita_f, xy_data_salita_f = weightedLinReg(misure_salita_f)
+mis_sal_f = WeightedMeasurements(t_sal_f, p_sal_f, err_t_sal_f, err_p_sal_f)
+reg_sal_f, xy_sal_f = weightedLinReg(mis_sal_f)
 
-# 2a. Grafico dei Fit (Senza i 4 punti freddi)
-plotGraphs([xy_data_discesa_f, misure_discesa_f, xy_data_salita_f, misure_salita_f], GraphVisuals(['k', 'ro', 'b', 'go']))
+# Stampa metriche e risultati
+print(f"Chi2 ridotto discesa filtrata : {reg_disc_f.chi2/reg_disc_f.nu:.2f}")
+print(f"Chi2 ridotto salita filtrata  : {reg_sal_f.chi2/reg_sal_f.nu:.2f}\n")
 
-print("======================================================================")
-print("===             ANALISI FILTRATA (SENZA I 4 PUNTI PIÙ FREDDI)      ===")
-print("======================================================================")
-print("Chi2 ridotto discesa filtrata:", reg_data_discesa_f.chi2 / reg_data_discesa_f.nu)
-print("Chi2 ridotto salita filtrata :", reg_data_salita_f.chi2 / reg_data_salita_f.nu)
-print(f"a discesa: {reg_data_discesa_f.a} | b discesa: {reg_data_discesa_f.b}")
-print(f"a salita : {reg_data_salita_f.a} | b salita : {reg_data_salita_f.b}")
-print(f"a_err discesa: {reg_data_discesa_f.a_err} | b_err discesa: {reg_data_discesa_f.b_err}")
-print(f"a_err salita : {reg_data_salita_f.a_err} | b_err salita : {reg_data_salita_f.b_err}")
+T0_disc_f, err_T0_disc_f = calcola_zero_assoluto(reg_disc_f)
+T0_sal_f, err_T0_sal_f = calcola_zero_assoluto(reg_sal_f)
 
-t_a_f = np.abs(reg_data_discesa_f.a - reg_data_salita_f.a) / np.sqrt(reg_data_discesa_f.a_err**2 + reg_data_salita_f.a_err**2)
-t_b_f = np.abs(reg_data_discesa_f.b - reg_data_salita_f.b) / np.sqrt(reg_data_discesa_f.b_err**2 + reg_data_salita_f.b_err**2)
-print(f"Nuovo T-test filtrato (a, b): {t_a_f} | {t_b_f}")
+print(f"Zero assoluto (Discesa): {T0_disc_f:.2f} +/- {err_T0_disc_f:.2f} K  ({T0_disc_f - T_0:.2f} °C)")
+print(f"Zero assoluto (Salita) : {T0_sal_f:.2f} +/- {err_T0_sal_f:.2f} K  ({T0_sal_f - T_0:.2f} °C)")
+print(f"Test compatibilità 0 K : {np.abs(T0_disc_f)/err_T0_disc_f:.2f} (disc) | {np.abs(T0_sal_f)/err_T0_sal_f:.2f} (sal)\n")
 
-# T-test dei parametri 'a' filtrati rispetto a 0
-t_a_zero_discesa_f = np.abs(reg_data_discesa_f.a) / reg_data_discesa_f.a_err
-t_a_zero_salita_f = np.abs(reg_data_salita_f.a) / reg_data_salita_f.a_err
-print(f"Nuovo T-test intercetta con lo zero (discesa, salita): {t_a_zero_discesa_f} | {t_a_zero_salita_f}\n")
+# Grafico fit e Residui Filtrati
+print("=> Mostro i grafici del Fit Filtrato")
+plt.figure(20, figsize=(10, 6))
+plt.title('Fit Filtrato: Pressione vs Temperatura')
+plt.xlabel('Temperatura T (K)')
+plt.ylabel('Pressione $P$ (Pa)')
+plt.grid(True, linestyle=':', alpha=0.5)
+# Generazione fittizia per la legenda
+plt.plot([], [], 'ro', label='Dati Filtrati Discesa')
+plt.plot([], [], 'k-', label='Fit Discesa')
+plt.plot([], [], 'go', label='Dati Filtrati Salita')
+plt.plot([], [], 'b-', label='Fit Salita')
+plt.legend()
+plotGraphs([xy_disc_f, mis_disc_f, xy_sal_f, mis_sal_f], GraphVisuals(['k', 'ro', 'b', 'go']), figureID=20)
 
-# 2b. Grafico dei Residui (Senza i 4 punti freddi)
-p_pred_discesa_f = reg_data_discesa_f.a + reg_data_discesa_f.b * t_discesa_f
-p_pred_salita_f = reg_data_salita_f.a + reg_data_salita_f.b * t_salita_f
-residui_discesa_f = p_discesa_f - p_pred_discesa_f
-residui_salita_f = p_salita_f - p_pred_salita_f
+residui_disc_f = p_disc_f - (reg_disc_f.a + reg_disc_f.b * t_disc_f)
+residui_sal_f = p_sal_f - (reg_sal_f.a + reg_sal_f.b * t_sal_f)
 
 fig2, (ax3, ax4) = plt.subplots(1, 2, figsize=(14, 4), sharey=True)
-ax3.axhline(y=0, color='k', linestyle='--', alpha=0.6)
-ax3.errorbar(t_discesa_f, residui_discesa_f, yerr=uni_discesa_f*err_p_int, xerr=uni_discesa_f*err_t, fmt='rx', ecolor='r', capsize=2, label='Residui Discesa Filtrata')
-ax3.set_title('Residui Filtrati - Discesa')
-ax3.set_xlabel('Temperatura T (K)')
-ax3.set_ylabel('Residui $\Delta P$ (Pa)')
+ax3.errorbar(t_disc_f, residui_disc_f, yerr=err_p_disc_f, xerr=err_t_disc_f, fmt='rx', ecolor='r', capsize=2, label='Dati Filtrati')
+ax3.axhline(0, color='k', linestyle='--', label='Residuo Atteso (=0)')
+ax3.set(title='Residui Filtrati - Discesa', xlabel='Temperatura T (K)', ylabel='Residui $\Delta P$ (Pa)')
 ax3.grid(True, linestyle=':', alpha=0.5)
 ax3.legend()
 
-ax4.axhline(y=0, color='k', linestyle='--', alpha=0.6)
-ax4.errorbar(t_salita_f, residui_salita_f, yerr=uni_salita_f*err_p_int, xerr=uni_salita_f*err_t, fmt='gx', ecolor='g', capsize=2, label='Residui Salita Filtrata')
-ax4.set_title('Residui Filtrati - Salita')
-ax4.set_xlabel('Temperatura T (K)')
+ax4.errorbar(t_sal_f, residui_sal_f, yerr=err_p_sal_f, xerr=err_t_sal_f, fmt='gx', ecolor='g', capsize=2, label='Dati Filtrati')
+ax4.axhline(0, color='k', linestyle='--', label='Residuo Atteso (=0)')
+ax4.set(title='Residui Filtrati - Salita', xlabel='Temperatura T (K)')
 ax4.grid(True, linestyle=':', alpha=0.5)
 ax4.legend()
+plt.tight_layout()
+plt.show()
+
+
+# ==============================================================================
+# PARTE 3: CORREZIONI SISTEMATICHE (VOLUME NON TERMALIZZATO E DILATAZIONE VETRO)
+# ==============================================================================
+print("\n" + "="*70 + "\n=== 3. ANALISI CORRETTA (SISTEMATICHE COMPENSATE)\n" + "="*70)
+
+def applica_correzioni(P_mis, T):
+    """Calcola la pressione ideale compensando dilatazione vetro e volume esterno."""
+    fattore_vetro = 1 + gamma * (T - T_0)
+    fattore_volume = (1 + (v * T) / (V0 * T_a)) / (1 + (v * T_0) / (V0 * T_a))
+    return P_mis * fattore_vetro * fattore_volume
+
+# Correzione dati filtrati
+p_disc_corr = applica_correzioni(p_disc_f, t_disc_f)
+p_sal_corr = applica_correzioni(p_sal_f, t_sal_f)
+
+# Correzione incertezze sulla pressione (proporzionale al fattore di scala)
+err_p_disc_corr = err_p_disc_f * (p_disc_corr / p_disc_f)
+err_p_sal_corr = err_p_sal_f * (p_sal_corr / p_sal_f)
+
+# Fit pesati sui dati corretti
+mis_disc_corr = WeightedMeasurements(t_disc_f, p_disc_corr, err_t_disc_f, err_p_disc_corr)
+reg_disc_corr, xy_disc_corr = weightedLinReg(mis_disc_corr)
+
+mis_sal_corr = WeightedMeasurements(t_sal_f, p_sal_corr, err_t_sal_f, err_p_sal_corr)
+reg_sal_corr, xy_sal_corr = weightedLinReg(mis_sal_corr)
+
+# Stampa risultati finali
+print(f"Chi2 ridotto discesa corretta : {reg_disc_corr.chi2/reg_disc_corr.nu:.2f}")
+print(f"Chi2 ridotto salita corretta  : {reg_sal_corr.chi2/reg_sal_corr.nu:.2f}\n")
+
+T0_disc_corr, err_T0_disc_corr = calcola_zero_assoluto(reg_disc_corr)
+T0_sal_corr, err_T0_sal_corr = calcola_zero_assoluto(reg_sal_corr)
+
+print(f"Zero assoluto (Discesa): {T0_disc_corr:.2f} +/- {err_T0_disc_corr:.2f} K  ({T0_disc_corr - T_0:.2f} °C)")
+print(f"Zero assoluto (Salita) : {T0_sal_corr:.2f} +/- {err_T0_sal_corr:.2f} K  ({T0_sal_corr - T_0:.2f} °C)")
+print(f"Test compatibilità 0 K : {np.abs(T0_disc_corr)/err_T0_disc_corr:.2f} (disc) | {np.abs(T0_sal_corr)/err_T0_sal_corr:.2f} (sal)\n")
+
+# Grafico fit e Residui Corretti
+print("=> Mostro i grafici del Fit Corretto")
+plt.figure(30, figsize=(10, 6))
+plt.title('Fit Corretto: Pressione vs Temperatura')
+plt.xlabel('Temperatura T (K)')
+plt.ylabel('Pressione $P$ (Pa)')
+plt.grid(True, linestyle=':', alpha=0.5)
+# Generazione fittizia per la legenda
+plt.plot([], [], 'ro', label='Dati Corretti Discesa')
+plt.plot([], [], 'k-', label='Fit Discesa')
+plt.plot([], [], 'go', label='Dati Corretti Salita')
+plt.plot([], [], 'b-', label='Fit Salita')
+plt.legend()
+plotGraphs([xy_disc_corr, mis_disc_corr, xy_sal_corr, mis_sal_corr], GraphVisuals(['k', 'ro', 'b', 'go']), figureID=30)
+
+residui_disc_corr = p_disc_corr - (reg_disc_corr.a + reg_disc_corr.b * t_disc_f)
+residui_sal_corr = p_sal_corr - (reg_sal_corr.a + reg_sal_corr.b * t_sal_f)
+
+fig3, (ax5, ax6) = plt.subplots(1, 2, figsize=(14, 4), sharey=True)
+ax5.errorbar(t_disc_f, residui_disc_corr, yerr=err_p_disc_corr, xerr=err_t_disc_f, fmt='rx', ecolor='r', capsize=2, label='Dati Corretti')
+ax5.axhline(0, color='k', linestyle='--', label='Residuo Atteso (=0)')
+ax5.set(title='Residui Corretti - Discesa', xlabel='Temperatura T (K)', ylabel='Residui $\Delta P$ (Pa)')
+ax5.grid(True, linestyle=':', alpha=0.5)
+ax5.legend()
+
+ax6.errorbar(t_sal_f, residui_sal_corr, yerr=err_p_sal_corr, xerr=err_t_sal_f, fmt='gx', ecolor='g', capsize=2, label='Dati Corretti')
+ax6.axhline(0, color='k', linestyle='--', label='Residuo Atteso (=0)')
+ax6.set(title='Residui Corretti - Salita', xlabel='Temperatura T (K)')
+ax6.grid(True, linestyle=':', alpha=0.5)
+ax6.legend()
 plt.tight_layout()
 plt.show()
